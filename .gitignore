@@ -1,0 +1,22 @@
+# Local secrets and build output
+secrets.yaml
+.venv/
+.esphome/
+__pycache__/
+*.log
+*.bin
+
+# Local tools (e.g. a free-shelly-ota checkout); their downloads and packages contain firmware / credentials
+tools/
+
+# Third-party datasheets and manuals
+docs/*.pdf
+
+# Local Claude Code settings
+.claude/
+
+# Local CI workspace and logs
+.ci/
+
+# Local material that must never be published
+do_not_commit/

@@ -1,0 +1,286 @@
+# ESP32-C3-LCDkit (Espressif: ESP32-C3, 4 MB flash, 1.28" GC9A01 round LCD, rotary encoder with push button) as
+# Zehnder Wivar BLE bridge with a display. Ran as a bridge on the real heater before the Shelly took over; also the
+# example for other boards: drop the display, knob and backlight sections and set your board under esp32:.
+# Display: room temperature gauge, target, room name and status. Knob: turn = backlight, short press = refresh,
+# hold 3 s = pair with the remote.
+
+substitutions:
+  name: wivar-lcd
+  friendly_name: Wivar Display
+  wivar_mac: !secret wivar_mac
+  wivar_nickname: "ESP-LCD"
+  wivar_components: components   # this checkout, not the GitHub default
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: 600
+    then:
+      - light.turn_on:
+          id: backlight
+          brightness: 80%
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+packages:
+  wivar: !include common/wivar.yaml
+
+logger:
+  logs:
+    # One "Found device" line per advertisement in range: dozens per poll with many BLE devices around (smoke
+    # alarms, ...). The connection to the remote is logged by esp32_ble_client and stays visible.
+    esp32_ble_tracker: INFO
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  encryption:
+    key: !secret wivar_lcd_api_key
+
+ota:
+  - platform: esphome
+    # Uploads are encrypted and authenticated with the API key (no separate OTA password).
+    encryption: {}
+
+# ── Backlight: dims after a while without knob activity, the first knob action wakes it ─────
+globals:
+  - id: last_activity
+    type: uint32_t
+    initial_value: "0"
+  - id: dimmed
+    type: bool
+    initial_value: "false"
+  - id: awake_brightness
+    type: float
+    initial_value: "0.8"
+
+script:
+  - id: wake
+    then:
+      - lambda: id(last_activity) = millis();
+      - if:
+          condition:
+            lambda: return id(dimmed);
+          then:
+            - lambda: id(dimmed) = false;
+            - light.turn_on:
+                id: backlight
+                brightness: !lambda return id(awake_brightness);
+
+interval:
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            lambda: return !id(dimmed) && millis() - id(last_activity) > 120000;
+          then:
+            - lambda: |-
+                id(dimmed) = true;
+                if (id(backlight).current_values.is_on())
+                  id(awake_brightness) = std::max(0.2f, id(backlight).current_values.get_brightness());
+            - light.turn_on:
+                id: backlight
+                brightness: 30%
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi signal"
+    update_interval: 60s
+  - platform: rotary_encoder
+    id: knob
+    internal: true
+    pin_a:
+      number: GPIO10
+      mode: INPUT_PULLUP
+    pin_b:
+      number: GPIO6
+      mode: INPUT_PULLUP
+    # When dimmed, the first turn only wakes the display (check before wake clears the flag).
+    on_clockwise:
+      - if:
+          condition:
+            lambda: return !id(dimmed);
+          then:
+            - light.dim_relative:
+                id: backlight
+                relative_brightness: 10%
+      - script.execute: wake
+    on_anticlockwise:
+      - if:
+          condition:
+            lambda: return !id(dimmed);
+          then:
+            - light.dim_relative:
+                id: backlight
+                relative_brightness: -10%
+      - script.execute: wake
+
+# Encoder push: short press = refresh now (or just wake when dimmed), hold 3 s = start pairing.
+binary_sensor:
+  - platform: gpio
+    id: knob_button
+    internal: true
+    pin:
+      number: GPIO9
+      inverted: true
+      mode: INPUT_PULLUP
+      ignore_strapping_warning: true
+    on_click:
+      - min_length: 50ms
+        max_length: 1s
+        then:
+          - if:
+              condition:
+                lambda: return !id(dimmed);
+              then:
+                - lambda: id(wivar).refresh();
+          - script.execute: wake
+      - min_length: 3s
+        max_length: 20s
+        then:
+          - script.execute: wake
+          - lambda: id(wivar).start_pairing();
+
+# ── Display: 1.28" GC9A01 240×240 round LCD ─────────────────────────────────
+output:
+  - platform: ledc
+    id: backlight_pwm
+    pin: GPIO5
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: "Backlight"
+    icon: mdi:brightness-6
+    output: backlight_pwm
+    restore_mode: ALWAYS_ON
+    default_transition_length: 200ms
+
+spi:
+  clk_pin: GPIO1
+  mosi_pin: GPIO0
+
+font:
+  - file: "gfonts://Roboto@500"
+    id: font_big
+    size: 64
+    glyphs: "0123456789.-°"
+  - file: "gfonts://Roboto"
+    id: font_mid
+    size: 26
+    glyphs: " -0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzäöüÄÖÜ"
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 16
+    glyphs: " !%'()+,-./0123456789:<>?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz°äöüÄÖÜ"
+
+color:
+  - id: c_text
+    hex: "FFFFFF"
+  - id: c_dim
+    hex: "8A8F98"
+  - id: c_track
+    hex: "2A2E35"
+  - id: c_heat
+    hex: "FF8A1F"
+  - id: c_idle
+    hex: "3DA5FF"
+  - id: c_water
+    hex: "4FC3F7"
+  - id: c_ok
+    hex: "2ECC71"
+  - id: c_warn
+    hex: "F39C12"
+  - id: c_err
+    hex: "E74C3C"
+
+display:
+  - platform: mipi_spi
+    id: lcd
+    model: GC9A01A
+    cs_pin: GPIO7
+    dc_pin:
+      number: GPIO2
+      ignore_strapping_warning: true
+    invert_colors: true
+    data_rate: 40MHz
+    update_interval: 2s
+    lambda: |-
+      const int cx = 120, cy = 120;
+      auto *w = id(wivar);
+      const float t = w->temperature();
+      const float target = w->target_temperature();
+
+      // Outer arc: 270° gauge of the room temperature (10-30 °C), white dot at the target.
+      // Orange while below target (heating demand), blue once reached.
+      const float start = 135.0f, sweep = 270.0f, t_min = 10.0f, t_max = 30.0f;
+      auto pos = [&](float v) { return std::max(0.0f, std::min((v - t_min) / (t_max - t_min), 1.0f)); };
+      const float frac = std::isnan(t) ? 0.0f : pos(t);
+      const bool below = !std::isnan(t) && !std::isnan(target) && t < target - 0.2f;
+      for (float a = 0; a <= sweep; a += 3.0f) {
+        float rad = (start + a) * M_PI / 180.0f;
+        int x = cx + lroundf(cosf(rad) * 110.0f);
+        int y = cy + lroundf(sinf(rad) * 110.0f);
+        bool on = frac > 0 && a <= sweep * frac;
+        it.filled_circle(x, y, 4, on ? (below ? id(c_heat) : id(c_idle)) : id(c_track));
+      }
+      if (!std::isnan(target)) {
+        float rad = (start + sweep * pos(target)) * M_PI / 180.0f;
+        it.filled_circle(cx + lroundf(cosf(rad) * 110.0f), cy + lroundf(sinf(rad) * 110.0f), 7, id(c_text));
+      }
+
+      // Target temperature above the main value.
+      if (!std::isnan(target))
+        it.printf(cx, 52, id(font_small), id(c_dim), TextAlign::CENTER, "Target %.1f°", target);
+
+      // Measured temperature.
+      if (!std::isnan(t))
+        it.printf(cx, 108, id(font_big), id(c_text), TextAlign::CENTER, "%.1f°", t);
+      else
+        it.print(cx, 108, id(font_big), id(c_dim), TextAlign::CENTER, "--.-°");
+
+      // Room name below.
+      if (!w->room_name().empty())
+        it.print(cx, 160, id(font_mid), id(c_dim), TextAlign::CENTER, w->room_name().c_str());
+
+      // Status line: connectivity dot + BLE state / reading age.
+      const bool wifi_ok = wifi::global_wifi_component->is_connected();
+      const bool api_ok = api::global_api_server->is_connected();
+      auto dot = !wifi_ok ? id(c_err) : (api_ok ? id(c_ok) : id(c_warn));
+      std::string line;
+      Color line_color = id(c_dim);
+      using zehnder_wivar::BridgeStatus;
+      const BridgeStatus st = w->status();
+      if (w->overheated()) {
+        line = "Overheated!";
+        line_color = id(c_err);
+      } else if (st == BridgeStatus::PAIRING || st == BridgeStatus::PAIRING_CONNECTING || st == BridgeStatus::PAIRING_FAILED ||
+          st == BridgeStatus::NOT_PAIRED) {
+        line = st == BridgeStatus::NOT_PAIRED ? std::string("Not paired: hold knob 3s") : w->status_text();
+        line_color = id(c_warn);
+      } else if (id(timer_remaining).has_state() && id(timer_remaining).state > 0) {
+        line = str_sprintf("Heating %.0f min", id(timer_remaining).state);
+        line_color = id(c_heat);
+      } else if (w->window_open()) {
+        line = "Window open";
+        line_color = id(c_idle);
+      } else if (w->has_reading() && !std::isnan(t)) {
+        uint32_t age = w->reading_age_s();
+        line = age < 120 ? str_sprintf("%us ago", (unsigned) age) : str_sprintf("%um ago", (unsigned) (age / 60));
+        if (w->status_is_problem()) {
+          line = w->status_text();
+          line_color = id(c_warn);
+        }
+      } else {
+        line = w->status_text();
+      }
+      it.filled_circle(cx - 4 - (int) line.size() * 4, 200, 4, dot);
+      it.print(cx + 4, 200, id(font_small), line_color, TextAlign::CENTER, line.c_str());

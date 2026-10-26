@@ -1,0 +1,3 @@
+# Python tools: ESPHome (firmware build, config validation, uploads) and its API client for the device tests.
+# The firmware is tested with exactly this ESPHome version; change the pin only together with a full CI run.
+esphome==2026.10.0

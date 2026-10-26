@@ -1,0 +1,218 @@
+# Zehnder Wivar BLE bridge: everything except the board itself.
+# Include from a device config, from GitHub or from a checkout:
+#   packages:
+#     wivar: github://imsandli/esphome-zehnder-wivar/common/wivar.yaml@main
+#     wivar: !include common/wivar.yaml
+# and set the substitutions wivar_mac and wivar_nickname there. The ones below are defaults a device config can
+# override; secrets (wivar_app_uuid, timezone) come from the device config's secrets.yaml.
+
+substitutions:
+  # Where the component comes from. Keep the same ref as the package; the configs in this repo build their checkout
+  # (wivar_components: components).
+  wivar_components: github://imsandli/esphome-zehnder-wivar@main
+  wivar_update_interval: 5min      # poll interval; every connect costs the remote's batteries
+  wivar_connect_timeout: 40s       # scan and connect limit per session (also the BLE scan duration)
+  wivar_retry_interval: 30s        # retries after a failed poll ...
+  wivar_max_retries: "3"           # ... up to this many
+  wivar_stale_after: 20min         # readings older than this become unknown
+  wivar_min_setpoint: "7"          # setpoint range offered and written (can be narrowed, not widened)
+  wivar_max_setpoint: "28"
+  wivar_sync_clock: "true"         # set the remote's clock once a day
+  wivar_room_index: "0"            # which room of the remote to use
+
+esphome:
+  min_version: 2026.10.0
+  project:
+    name: imsandli.zehnder-wivar
+    version: 0.1.0
+
+external_components:
+  - source: ${wivar_components}
+    components: [zehnder_wivar]
+
+# ── Zehnder Wivar over BLE ──────────────────────────────────────────────────
+esp32_ble:
+  max_connections: 1
+
+esp32_ble_tracker:
+  # Scans run only during a poll (started by zehnder_wivar); a high duty cycle catches the remote's sparse adverts.
+  scan_parameters:
+    active: false
+    continuous: false
+    # At least as long as the component's connect_timeout (checked at config time).
+    duration: ${wivar_connect_timeout}
+    interval: 100ms
+    window: 80ms
+
+ble_client:
+  - id: wivar_ble
+    mac_address: ${wivar_mac}
+    auto_connect: false
+
+zehnder_wivar:
+  id: wivar
+  ble_client_id: wivar_ble
+  # Writes from HA go out immediately, independent of the poll interval.
+  update_interval: ${wivar_update_interval}
+  connect_timeout: ${wivar_connect_timeout}
+  retry_interval: ${wivar_retry_interval}
+  max_retries: ${wivar_max_retries}
+  stale_after: ${wivar_stale_after}
+  min_setpoint: ${wivar_min_setpoint}
+  max_setpoint: ${wivar_max_setpoint}
+  sync_clock: ${wivar_sync_clock}
+  room_index: ${wivar_room_index}
+  # Identity registered on the remote when pairing (any random UUID, kept in secrets.yaml).
+  app_uuid: !secret wivar_app_uuid
+  time_id: sntp_time
+  nickname: ${wivar_nickname}
+  temperature:
+    name: "Temperature"
+  target_temperature:
+    name: "Target temperature"
+  room_name:
+    name: "Room"
+  # humidity / valve / heating: never reported by this Wivar remote, so left out.
+  run_mode:
+    name: "Run mode"
+  mode:
+    name: "Mode"
+  schedule:
+    name: "Schedule"
+  schedule_today:
+    name: "Schedule today"
+  next_switch:
+    name: "Next switch"
+  schedule_write:
+    name: "Schedule write"
+  window_open:
+    name: "Window open"
+  overheated:
+    name: "Heater overheated"
+  battery_low:
+    name: "Remote battery low"
+  error:
+    name: "Remote error"
+  thermostat:
+    name: "Thermostat"
+  home_setpoint:
+    name: "Home setpoint"
+  away_setpoint:
+    name: "Away setpoint"
+  signal_strength:
+    name: "Remote signal"
+  surface_temperature:
+    name: "Surface temperature setting"
+  firmware_version:
+    name: "Remote firmware"
+  firmware_untested:
+    name: "Remote firmware untested"
+  connections:
+    name: "BLE connections"
+  connected_time:
+    name: "BLE connected time"
+  status:
+    name: "BLE status"
+
+# Change the remote's schedule from Home Assistant: action esphome.<device>_set_schedule with the text in the format
+# of the Schedule sensor, e.g. "Mo-Fr: 06:20 Home, 06:45 Away; Sa-Su: 08:30 Home, 09:00 Away" (days not given stay).
+# The outcome shows on "Schedule write".
+api:
+  actions:
+    - action: set_schedule
+      variables:
+        schedule: string
+      then:
+        - lambda: id(wivar).set_schedule(schedule);
+
+# The same as a text field, for the web UI and dashboards. Limited to 255 characters (ESPHome text entities): enough
+# to change a few days, for a whole week with many switches use the action above.
+text:
+  - platform: template
+    id: schedule_edit
+    name: "Schedule edit"
+    icon: mdi:calendar-edit
+    mode: text
+    max_length: 255
+    optimistic: true
+    initial_value: ""
+    set_action:
+      - lambda: id(wivar).set_schedule(x);
+
+# Clock for the heating timer countdown (the remote reports the end time as unix time).
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: !secret timezone
+
+button:
+  - platform: template
+    id: btn_pair
+    name: "Pair Wivar"
+    icon: mdi:link-variant
+    entity_category: config
+    on_press:
+      - lambda: id(wivar).start_pairing();
+  - platform: template
+    id: btn_refresh
+    name: "Refresh now"
+    icon: mdi:refresh
+    on_press:
+      - lambda: id(wivar).refresh();
+  # Heating timer, like the remote's 1/2/4 h keys. 15, 30 and 45 min are not offered by the app or the remote.
+  - platform: template
+    id: btn_heat_15min
+    name: "Heat 15 min"
+    icon: mdi:timer-outline
+    on_press:
+      - lambda: id(wivar).start_timer(15);
+  - platform: template
+    id: btn_heat_30min
+    name: "Heat 30 min"
+    icon: mdi:timer-outline
+    on_press:
+      - lambda: id(wivar).start_timer(30);
+  - platform: template
+    id: btn_heat_45min
+    name: "Heat 45 min"
+    icon: mdi:timer-outline
+    on_press:
+      - lambda: id(wivar).start_timer(45);
+  - platform: template
+    id: btn_heat_1h
+    name: "Heat 1 h"
+    icon: mdi:timer-outline
+    on_press:
+      - lambda: id(wivar).start_timer(60);
+  - platform: template
+    id: btn_heat_2h
+    name: "Heat 2 h"
+    icon: mdi:timer-outline
+    on_press:
+      - lambda: id(wivar).start_timer(120);
+  - platform: template
+    id: btn_heat_4h
+    name: "Heat 4 h"
+    icon: mdi:timer-outline
+    on_press:
+      - lambda: id(wivar).start_timer(240);
+  - platform: template
+    id: btn_heat_stop
+    name: "Heat timer stop"
+    icon: mdi:timer-off-outline
+    on_press:
+      - lambda: id(wivar).stop_timer();
+  - platform: restart
+    id: btn_restart
+    name: "Restart"
+
+sensor:
+  - platform: template
+    name: "Heat timer remaining"
+    id: timer_remaining
+    icon: mdi:timer-sand
+    unit_of_measurement: min
+    accuracy_decimals: 0
+    update_interval: 15s
+    lambda: |-
+      return ceilf(id(wivar).timer_remaining_s() / 60.0f);
