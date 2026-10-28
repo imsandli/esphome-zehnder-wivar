@@ -7,6 +7,41 @@ window detection and the remote's status.
 > **Experimental.** Tested with one Wivar II remote ("Steuergerät Modell 1", firmware 0x100411) only. See the
 > [disclaimer](#disclaimer) before you use it.
 
+## Overview
+
+```
+                               Home Assistant
+                                     ^
+                                     | Wi-Fi: ESPHome native API (encrypted)
+                                     v
+                       +----------------------------+
+                       | ESP32 bridge, this project |
+                       | (Shelly PM Mini Gen3,      |
+                       |  ESP32-C3-LCDkit, ...)     |
+                       +----------------------------+
+                                     ^
+                                     | Bluetooth LE: one short connection every 5 min,
+                                     | changes at once (the Zehnder app uses the same link)
+                                     v
+  Wivar remote "Steuergerät Modell 1", 2 x AA      Wivar II heating rod, in the towel radiator
+ +--------------------------------------------+
+ |  MAN                 T4           zehnder  |       PTC element,                 LED ring, dial
+ |  AUTO                T3                    |       temperature sensor
+ |   4 h                T2                    |    ________________________ ____ ____________
+ |   2 h                T1                    |   (________________________|####|____|||_____o)
+ |   1 h                (*)          [batt]   |                            1/2" thread       |
+ |                                            |                                     pairing button
+ |   ( mode )     ( room temp / standby )     |
+ +--------------------------------------------+
+   measures the room temperature, keeps the     <--- radio link --->   heats; has no Bluetooth,
+   setpoints, runs the schedule and timers        (BasicRF 2.4 GHz,     only the remote talks to it
+                                                   not Bluetooth)
+```
+
+The bridge never talks to the heating rod. It reads and changes what the remote holds (room temperature,
+setpoints, mode, schedule, timer, clock), and the remote drives the rod as if the change had been made on its
+buttons or in the Zehnder app.
+
 ## Features
 
 - Room temperature, target temperature, run mode, window open, room name
@@ -30,6 +65,27 @@ The Shelly PM Mini Gen3 (S3PM-001PCEU16) is a small power meter for the wall box
 and a BL0942 metering chip, but **no relay**. It only measures; the heater's power runs straight through it. In
 my setup it sits in the wall box behind the heater's plug and runs this firmware instead of Shelly's, so it is the
 bridge to the remote and the heater's power meter in one.
+
+```
+                                     Home Assistant
+                                          ^
+                                          | Wi-Fi: ESPHome API, web UI
+ wall box behind the heater's socket      |
++-----------------------------------------|------+
+|                                         v      |
+|  mains  =====>  +---------------------------+  |    Bluetooth LE      +--------------+
+|                 | Shelly PM Mini Gen3       |<~~~~~~~~~~~~~~~~~~~~~~~>| Wivar remote |
+|                 |  ESP32-C3: the bridge     |  |                      +--------------+
+|                 |  BL0942: power meter      |  |                             ^
+|                 |  button, status LED       |  |                             | radio link
+|                 +---------------------------+  |                             v
+|                         ||  measured,          |                      +--------------+
+|                         ||  never switched     |                      | Wivar II     |
+|                         vv                     |     heater's plug    | heating rod  |
+|                     [ socket ] =================================>====>|              |
+|                                                |                      +--------------+
++------------------------------------------------+
+```
 
 What `wivar-shelly.yaml` adds to the bridge:
 
