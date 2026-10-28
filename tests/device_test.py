@@ -430,6 +430,8 @@ async def run(args) -> None:
         check("final state read from the remote", fresh, "values below may be the bridge's cached ones")
         check("final state equals the original", not differ, differ or final)
         check("remote error none at the end", states.get("Remote error") in ("None", None), states.get("Remote error"))
+        framing = [m for m in logs if "Frame too large" in m or "Malformed frame" in m]
+        check("no reply framing warnings in the bridge's log", not framing, framing[:3] or f"{len(logs)} log lines")
         if differ or not fresh or restore_failed:
             what = differ if fresh else {n: f"original {orig[n]!r}" for n in orig}
             log(f"RECOVERY NEEDED: not restored{'' if fresh and not restore_failed else ' or not verified'}: "
